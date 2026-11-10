@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 
 /// 连接清单的持久化：地址簿 + 每台的在线探测结果缓存。
 ///

@@ -65,7 +65,7 @@ struct SessionsScreen: View {
         HStack(spacing: 7) {
             ForEach(SessionFilter.allCases, id: \.self) { item in
                 FilterChip(
-                    title: item.title,
+                    title: item.rawValue,
                     count: count(for: item),
                     selected: filter == item
                 ) {

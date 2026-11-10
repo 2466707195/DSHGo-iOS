@@ -290,6 +290,11 @@ struct DSHBrowserView: UIViewRepresentable {
             injectPolyfills(webView)
         }
 
+        /// 两个 polyfill，只在缺失时定义，绝不覆盖原生实现。
+        private func injectPolyfills(_ webView: WKWebView) {
+            webView.evaluateJavaScript(DSHWebView.polyfillScript(), completionHandler: nil)
+        }
+
         func webView(_ webView: WKWebView,
                      didFailProvisionalNavigation navigation: WKNavigation!,
                      withError error: Error) {

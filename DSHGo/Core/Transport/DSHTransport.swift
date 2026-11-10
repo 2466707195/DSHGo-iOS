@@ -363,7 +363,7 @@ final class DSHTransport: ObservableObject {
         }
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let result = json["result"] as? [String: Any] else {
-            throw RPCError.badEnvelope(String(data: data, encoding: .utf8)?.prefix(200) ?? "")
+            throw RPCError.badEnvelope(String(data: data, encoding: .utf8)?.prefix(200).description ?? "")
         }
         guard result["ok"] as? Bool == true else {
             let err = result["error"] as? [String: Any]

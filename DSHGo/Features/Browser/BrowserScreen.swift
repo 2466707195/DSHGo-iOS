@@ -104,12 +104,12 @@ struct BrowserScreen: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            GlassIconButton(systemName: "chevron.right", tint: canGoForward ? Aurora.ink : Aurora.muted, diameter: 30, iconSize: 12) {
+            GlassIconButton(systemIcon: "chevron.right", tint: canGoForward ? Aurora.ink : Aurora.muted, diameter: 30, iconSize: 12) {
                 NotificationCenter.default.post(name: .dshWebForward, object: nil)
             }
             .disabled(!canGoForward)
 
-            GlassIconButton(systemName: "arrow.clockwise", tint: Aurora.ink, diameter: 30, iconSize: 12) {
+            GlassIconButton(systemIcon: "arrow.clockwise", tint: Aurora.ink, diameter: 30, iconSize: 12) {
                 NotificationCenter.default.post(name: .dshReloadBrowser, object: nil)
             }
         }
