@@ -485,7 +485,7 @@ final class DSHTransport: ObservableObject {
         var request = URLRequest(url: url)
         request.timeoutInterval = 15
         // 显式把会话 cookie 附上：取不到时一眼能分清是认证问题还是网络问题
-        let cookieHeader = DSHCookies.cookieHeader(forHost: computer.host)
+        let cookieHeader = DSHCookies.cookieHeader(for: computer.host)
         if !cookieHeader.isEmpty {
             request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
         }

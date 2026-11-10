@@ -61,13 +61,15 @@ struct DSHComputer: Identifiable, Hashable, Codable {
 struct ApprovalAsk: Identifiable, Hashable, Codable {
     /// 事件流上的 clientId（回执要用）。
     let clientId: String
-    /// waterfall 帧的 eventId（回执要用）。
+    /// waterfall 帧的 eventId（回执要用），同时当作列表 id。
     let eventId: String
     var toolName: String
     var reason: String?
     var agent: String?
     var sessionId: String?
     var askedAt: Date = Date()
+
+    var id: String { eventId }
 
     var displayTitle: String {
         toolName.isEmpty ? "操作" : toolName
