@@ -179,6 +179,9 @@ final class AppModel: ObservableObject {
         computer: DSHComputer,
         didFailover: Bool = false
     ) async {
+        // 本次连接是否已经切过一次地址（参数带进来的）。
+        // 切过还失败就认命，不再切 —— 否则会在两个地址之间无限递归。
+        var alreadyFailedOver = didFailover
         // 1. 原生握手：跟完重定向、收 dsh-auth cookie，并桥接给 WebView
         let handshake = await transport.handshake()
         guard handshake.isOK else {
@@ -199,8 +202,8 @@ final class AppModel: ObservableObject {
             // 多地址自动选路：当前地址连不上才切（Tailscale ↔ 局域网）。
             // ★ 只切一次 —— 以前每次失败都切，会在两个地址之间无限递归，
             //   每轮都是 12s 握手 + 2.5s 探测，看起来就是「一直卡在连接中」。
-            if !didFailover {
-                didFailover = true
+            if !alreadyFailedOver {
+                alreadyFailedOver = true
                 if store.switchAddress(for: computer.id) {
                     let switched = store.computers.first { $0.id == computer.id } ?? computer
                     toast = Toast(text: "\(reason)，切到 \(switched.displayAddress)", kind: .warning)
