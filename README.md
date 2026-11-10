@@ -88,6 +88,25 @@ python scripts/upload-to-qnq.py build/*-unsigned.ipa
 
 未签名 ipa 不能直接装，必须重签；工程里所有签名相关设置都刻意留空。
 
+**已验证**：GitHub Actions（macos-15 + Xcode 26.3）实编译通过，产物
+`build/DSHGo-unsigned.ipa`（590 KB，arm64，最低 iOS 16.4），`build/Info.json`
+里的权限文案、ATS、快捷菜单都对。
+
+## 当前状态
+
+| 能力 | 状态 |
+|---|---|
+| 探测 / 握手 / 解锁 / RPC / 事件流 | ✅ 对着真机 dshgo 2.0.5 跑通（`tools/probe-api.mjs`） |
+| 连接列表 + 多地址选路 | ✅ |
+| 会话列表 + 通知栏允许/拒绝 | ✅ |
+| 语音输入（边说边出字） | ✅ |
+| 访问密码（四档 + Keychain + 生物识别） | ✅ |
+| WebView 跑 dsh web + 布局覆盖 | ✅ |
+| 长按图标快捷菜单 | ✅ |
+| 主屏小组件 | ❌ 未做（需要 Widget Extension + App Group） |
+| 分享进 DSH | ❌ 未做（需要 Share Extension） |
+| 应用内更新 | ❌ 未做（`/info` 已带回 `updateAvailable`，只差下载与安装） |
+
 ## 许可
 
 MIT。协议与功能按 dshgo（MIT）复刻；移动端布局思路内联自
