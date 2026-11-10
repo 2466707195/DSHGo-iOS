@@ -20,6 +20,11 @@ import Combine
 final class DSHWebView: UIView, WKNavigationDelegate {
 
     let webView: WKWebView
+    /// 已经加载过的入口地址。**不能拿 `webView.url` 判断要不要重载** ——
+    /// 代理会把根导航 303 到 `/`（带斜杠），`absoluteString` 永远对不上，
+    /// 于是每次 updateUIView 都重载，前一次 load 被取消 → didFail 报错 → 页面永远出不来。
+    private var loadedHost: String?
+    private var loadedPort: Int?
     private var observations: [NSKeyValueObservation] = []
     private var bag = Set<AnyCancellable>()
 
@@ -96,11 +101,24 @@ final class DSHWebView: UIView, WKNavigationDelegate {
     // MARK: - 加载
 
     func load(baseURL: URL) {
-        // cookie 必须先转存进 WebView，再加载
+        // 记录「已加载的是哪台电脑」：之后只有换了电脑才重载
+        loadedHost = baseURL.host
+        loadedPort = baseURL.port
+        // cookie 必须先转存进 WebView，再加载（握手时已经转过一次，这里兜底）
         if let host = baseURL.host {
             DSHCookies.syncToWebView(forHost: host)
         }
         webView.load(URLRequest(url: baseURL))
+    }
+
+    /// 换了电脑（host/port 变了）才需要重载。
+    ///
+    /// ★ 不要比 `absoluteString`：代理会 303 到 `/`、还可能带 `?token=`，
+    ///   拿它比会陷入「重载 → 取消上一次 → didFail → 再重载」的死循环。
+    func needsReload(for baseURL: URL) -> Bool {
+        guard let host = baseURL.host else { return false }
+        if loadedHost == nil { return true }
+        return loadedHost != host || loadedPort != baseURL.port
     }
 
     func reload() {
@@ -270,10 +288,9 @@ struct DSHBrowserView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: DSHWebView, context: Context) {
-        // 连接切换后地址变了必须重载，否则浏览器 Tab 还显示着上一台电脑的页面。
-        // 只在「还没加载过」或「地址真的变了」时重载，避免每次刷新都打断正在写的输入框。
-        let current = uiView.webView.url?.absoluteString
-        if current == nil || current != baseURL.absoluteString {
+        // 只有「换了电脑」才重载。WebView 里的 303 跳转、前进后退都不算 ——
+        // 拿 url 比 absoluteString 会无限重载，把每次加载都取消掉。
+        if uiView.needsReload(for: baseURL) {
             uiView.layoutMobile = DSHWebViewLayout.mobile
             uiView.load(baseURL: baseURL)
         }
@@ -298,6 +315,9 @@ struct DSHBrowserView: UIViewRepresentable {
         func webView(_ webView: WKWebView,
                      didFailProvisionalNavigation navigation: WKNavigation!,
                      withError error: Error) {
+            // 自己发起的重载会把上一次 load 取消（-999），那不是真失败，
+            // 别把它弹成「页面打不开」—— 用户会被一个假错误挡住。
+            if (error as NSError).code == NSURLErrorCancelled { return }
             onLoadFailed?(error.localizedDescription)
         }
     }
