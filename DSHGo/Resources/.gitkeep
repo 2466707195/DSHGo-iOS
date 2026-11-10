@@ -1,0 +1,2 @@
+XcodeGen 会把 Info.plist 生成到这个目录。
+Git 不跟踪空目录，所以需要一个占位文件，否则云端 clone 下来目录不存在、XcodeGen 写 plist 失败。

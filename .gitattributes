@@ -1,0 +1,19 @@
+# 全部文本文件强制 LF。
+#
+# 为什么必须有这个文件：在 Windows 上，任何「用 Python / PowerShell 重写一遍」
+# 的文件默认会带上 CRLF（`core.autocrlf=false` 时 CRLF 会原样进仓库）。
+# 一旦 `project.yml` 变成 CRLF，云端 XcodeGen 仍然能生成工程，但
+# `xcodebuild -list` 会静默失败、整个构建报「Xcode 打不开刚生成的工程」——
+# 表面上看不出和行尾有任何关系，实测连挂两轮才定位到。
+* text=auto eol=lf
+
+# Shell 脚本必须 LF，否则 runner 上 `bash: bad interpreter`。
+*.sh   text eol=lf
+*.py   text eol=lf
+
+# 这些是二进制，别让 git 碰
+*.png  binary
+*.jpg  binary
+*.ipa  binary
+*.zip  binary
+*.car  binary
