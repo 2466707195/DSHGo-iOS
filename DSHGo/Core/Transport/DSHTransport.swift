@@ -544,7 +544,7 @@ final class DSHTransport: ObservableObject {
     /// 保活：防 NAT 静默断链（Android 侧用 OkHttp 的 pingInterval 20s 做同一件事）。
     private func startKeepAlive(task: URLSessionWebSocketTask) {
         pingTask?.cancel()
-        pingTask = Task { [weak self] in
+        pingTask = Task {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 20 * 1_000_000_000)
                 if Task.isCancelled { return }
@@ -739,6 +739,7 @@ final class DSHTransport: ObservableObject {
         content.body = "\(ask.displayTitle)｜\(session.title)"
         content.categoryIdentifier = "DSH_APPROVAL"
         content.interruptionLevel = .timeSensitive
+        content.sound = .default
         var info: [String: Any] = [
             "eventId": ask.eventId,
             "sessionId": ask.sessionId ?? ""
@@ -748,10 +749,11 @@ final class DSHTransport: ObservableObject {
             info["ask"] = json
         }
         content.userInfo = info
+        // ★ sound 是 content 的属性，不是 request 的参数
         let request = UNNotificationRequest(
             identifier: Self.notificationID(for: ask.eventId),
             content: content,
-            sound: .default
+            trigger: nil
         )
         UNUserNotificationCenter.current().add(request)
     }
@@ -763,10 +765,11 @@ final class DSHTransport: ObservableObject {
         content.title = "DSH Go · 跑完了"
         content.body = title
         content.interruptionLevel = .passive
+        content.sound = .default
         let request = UNNotificationRequest(
             identifier: "dshgo-done-\(id)",
             content: content,
-            sound: .default
+            trigger: nil
         )
         UNUserNotificationCenter.current().add(request)
     }

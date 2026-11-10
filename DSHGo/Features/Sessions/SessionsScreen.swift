@@ -138,12 +138,9 @@ struct SessionsScreen: View {
                             .lineLimit(1)
                         StatusPill(text: session.status.title, color: session.status.color)
                     }
-                    Text(RelativeDateTimeFormatter.localizedString(
-                        for: session.updatedAt,
-                        relativeTo: Date()
-                    ))
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(Aurora.muted)
+                    Text(relativeTime(session.updatedAt))
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(Aurora.muted)
                 }
                 Spacer(minLength: 0)
             }
@@ -198,5 +195,10 @@ struct SessionsScreen: View {
                 message: "到「连接」页连上一台电脑，会话就会自动同步到这里。"
             )
         }
+    }
+
+    /// 「3 分钟前 / 昨天 / 2 小时前」—— 实例方法，不是静态方法。
+    private func relativeTime(_ date: Date) -> String {
+        RelativeDateTimeFormatter().localizedString(for: date, relativeTo: Date())
     }
 }

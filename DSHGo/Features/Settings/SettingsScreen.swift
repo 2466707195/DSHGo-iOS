@@ -192,7 +192,7 @@ struct SettingsScreen: View {
 
             infoRow("已存密码", model.hasStoredPassword ? "已存（Keychain）" : "未存")
 
-            if let computer = model.linkState.computer {
+            if model.linkState.computer != nil {
                 Spacer().frame(height: 8)
                 HStack(spacing: 8) {
                     SmallTonalButton(text: "清除密码", systemIcon: "key.slash") {
