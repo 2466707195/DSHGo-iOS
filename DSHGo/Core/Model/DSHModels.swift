@@ -159,6 +159,14 @@ enum DSHLinkState: Equatable {
         case .failed(let c, let reason): return "\(c.name)：\(reason)"
         }
     }
+
+    /// 是否正在连接中（握手 / 校验 / 等待解锁）。
+    var isConnecting: Bool {
+        switch self {
+        case .handshaking, .verifying: return true
+        case .idle, .online, .unlockRequired, .failed: return false
+        }
+    }
 }
 
 // MARK: - Tab

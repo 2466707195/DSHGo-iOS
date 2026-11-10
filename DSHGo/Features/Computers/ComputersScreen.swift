@@ -30,6 +30,11 @@ struct ComputersScreen: View {
             }
         } content: {
             AuroraScrollView(bottomInset: 24) {
+                // ★ 当前连接的**真实**状态卡：探测得到的「在线」只说明端口通，
+                // 真正连没连上看这里（握手/校验/失败原因）。
+                if let active = model.store.active {
+                    linkStateCard(active)
+                }
                 if model.store.computers.isEmpty {
                     emptyCard
                 } else {
@@ -51,6 +56,103 @@ struct ComputersScreen: View {
         }
         .onAppear {
             Task { await model.refreshAllStatus() }
+        }
+    }
+
+    // MARK: 真实连接状态
+
+    /// 探测状态 ≠ 连接状态。端口通不代表连上了 —— 握手失败、要解锁、
+    /// 会话拉不到，都只体现在 `linkState` 上。这张卡把它明说出来。
+    @ViewBuilder
+    private func linkStateCard(_ computer: DSHComputer) -> some View {
+        let state = model.linkState
+        if state.isOnline {
+            SectionCard {
+                HStack(spacing: 10) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(Aurora.success)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("已连接 \(computer.name)")
+                            .font(AuroraFont.titleSmall)
+                            .foregroundStyle(Aurora.ink)
+                        Text(model.activeTransport.map { "事件流：\(modeText($0.mode))" } ?? "")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Aurora.inkSoft)
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+        } else {
+            SectionCard {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 8) {
+                        Image(systemName: state.isConnecting ? "arrow.triangle.2.circlepath" : "exclamationmark.triangle.fill")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(state.isConnecting ? Aurora.info : Aurora.danger)
+                        Text(state.isConnecting ? "正在连接…" : "没连上")
+                            .font(AuroraFont.titleSmall)
+                            .foregroundStyle(Aurora.ink)
+                        Spacer(minLength: 0)
+                    }
+
+                    // 失败原因 —— 以前只显示 2.6 秒的 toast，用户根本来不及看
+                    if case .failed(let c, let reason) = state, c.id == computer.id {
+                        Text(reason)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Aurora.danger)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    if case .unlockRequired = state {
+                        Text("这台电脑设了访问密码，需要先解锁。")
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Aurora.warning)
+                    }
+
+                    // 诊断：一眼分清是认证问题还是网络问题
+                    if let transport = model.activeTransport {
+                        Divider().overlay(Aurora.hairline)
+                        infoLine("地址", computer.activeAddress)
+                        infoLine("Cookie", transport.lastCookieInfo)
+                        infoLine("本机", WiFiInfo.currentIPv4()?.address ?? "未知")
+                    }
+
+                    HStack(spacing: 8) {
+                        PrimaryButton(
+                            text: "重试连接",
+                            systemIcon: "arrow.clockwise",
+                            enabled: !state.isConnecting,
+                            expands: false
+                        ) {
+                            model.connect(computer: computer)
+                        }
+                        .frame(width: 128)
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
+        }
+    }
+
+    private func modeText(_ mode: DSHTransport.Mode) -> String {
+        switch mode {
+        case .stream: return "WebSocket 已连接"
+        case .poll: return "轮询兜底"
+        case .down: return "已断开"
+        }
+    }
+
+    private func infoLine(_ title: String, _ value: String) -> some View {
+        HStack(alignment: .top) {
+            Text(title)
+                .font(.system(size: 11))
+                .foregroundStyle(Aurora.muted)
+                .frame(width: 44, alignment: .leading)
+            Text(value)
+                .font(.system(size: 11))
+                .foregroundStyle(Aurora.inkSoft)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
         }
     }
 
@@ -100,8 +202,7 @@ struct ComputersScreen: View {
                     Text(computer.statusText)
                         .font(AuroraFont.bodySmall)
                         .foregroundStyle(statusColor(computer))
-                        .lineLimit(1)
-                }
+                        .lineLimit(1)                }
 
                 Spacer(minLength: 4)
 

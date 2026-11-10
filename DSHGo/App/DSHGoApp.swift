@@ -23,8 +23,6 @@ struct RootView: View {
 
     @EnvironmentObject private var model: AppModel
     @Environment(\.scenePhase) private var scenePhase
-
-    @State private var tab: AppTab = .computers
     @State private var showUnlock = false
 
     private var tabItems: [AuroraTabSpec<AppTab>] {
@@ -39,7 +37,7 @@ struct RootView: View {
     var body: some View {
         // 底栏一律交给系统（iOS 18+ 原生 Tab，iOS 26+ 自动 Liquid Glass）。
         // 不要再画自绘胶囊，也不要给 TabView 设任何背景 —— 设了就把玻璃盖掉了。
-        AuroraTabHost(selection: $tab, items: tabItems) { current in
+        AuroraTabHost(selection: $model.selectedTab, items: tabItems) { current in
             // 背景必须放进每个 Tab 的内容**内部**：系统玻璃要有东西可折射。
             ZStack {
                 AuroraBackdrop()
@@ -51,9 +49,9 @@ struct RootView: View {
         }
         // 有会话等你批准时浮一个小胶囊，一眼能看到
         .overlay(alignment: .bottom) {
-            if !model.pendingSessions.isEmpty, tab != .sessions {
+            if !model.pendingSessions.isEmpty, model.selectedTab != .sessions {
                 PendingBanner {
-                    tab = .sessions
+                    model.selectedTab = .sessions
                 }
                 .padding(.bottom, 96)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -77,13 +75,13 @@ struct RootView: View {
         }
         // 长按图标的三个快捷菜单
         .onReceive(NotificationCenter.default.publisher(for: .dshShortcutNewSession)) { _ in
-            tab = .browser
+            model.selectedTab = .browser
         }
         .onReceive(NotificationCenter.default.publisher(for: .dshShortcutRecent)) { _ in
-            tab = .sessions
+            model.selectedTab = .sessions
         }
         .onReceive(NotificationCenter.default.publisher(for: .dshShortcutSettings)) { _ in
-            tab = .settings
+            model.selectedTab = .settings
         }
     }
 

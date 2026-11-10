@@ -46,6 +46,8 @@ final class AppModel: ObservableObject {
     @Published var voiceRecording = false
     /// 语音「边说边出字」的中间结果。
     @Published var voiceTranscript = ""
+    /// 当前选中的 Tab。别的页面可以用它把用户带回「连接」页。
+    @Published var selectedTab: AppTab = .computers
 
     private var speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "zh-CN"))
     private var recognitionTask: SFSpeechRecognitionTask?
@@ -77,7 +79,11 @@ final class AppModel: ObservableObject {
     // MARK: - 连接
 
     func connect(computer: DSHComputer) {
-        guard linkState.computer?.id != computer.id else { return }
+        // ★ 只有「已经连着同一台」才跳过。
+        // 以前这里是 `linkState.computer?.id != computer.id` —— 失败后再点同一行
+        // 会被这个 guard 挡掉，用户永远卡在失败状态，只能去设置里点重新连接。
+        if case .online(let current) = linkState, current.id == computer.id { return }
+
         deactivateCurrent()
 
         var updated = computer
@@ -168,7 +174,11 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func probeAndConnect(transport: DSHTransport, computer: DSHComputer) async {
+    private func probeAndConnect(
+        transport: DSHTransport,
+        computer: DSHComputer,
+        didFailover: Bool = false
+    ) async {
         // 1. 原生握手：跟完重定向、收 dsh-auth cookie，并桥接给 WebView
         let handshake = await transport.handshake()
         guard handshake.isOK else {
@@ -186,16 +196,21 @@ final class AppModel: ObservableObject {
 
         switch outcome {
         case .failed(let reason):
-            // 多地址自动选路：当前地址连不上才切（Tailscale ↔ 局域网）
-            if store.switchAddress(for: computer.id) {
-                let switched = store.computers.first { $0.id == computer.id } ?? computer
-                toast = Toast(text: "\(reason)，切到 \(switched.displayAddress)", kind: .warning)
-                linkState = .handshaking(switched)
-                let newTransport = getTransport(for: switched)
-                activeTransport = newTransport
-                bind(transport: newTransport)
-                await probeAndConnect(transport: newTransport, computer: switched)
-                return
+            // 多地址自动选路：当前地址连不上才切（Tailscale ↔ 局域网）。
+            // ★ 只切一次 —— 以前每次失败都切，会在两个地址之间无限递归，
+            //   每轮都是 12s 握手 + 2.5s 探测，看起来就是「一直卡在连接中」。
+            if !didFailover {
+                didFailover = true
+                if store.switchAddress(for: computer.id) {
+                    let switched = store.computers.first { $0.id == computer.id } ?? computer
+                    toast = Toast(text: "\(reason)，切到 \(switched.displayAddress)", kind: .warning)
+                    linkState = .handshaking(switched)
+                    let newTransport = getTransport(for: switched)
+                    activeTransport = newTransport
+                    bind(transport: newTransport)
+                    await probeAndConnect(transport: newTransport, computer: switched, didFailover: true)
+                    return
+                }
             }
             var c = computer
             c.isOnline = false
@@ -465,10 +480,11 @@ final class AppModel: ObservableObject {
                         c.latencyMs = nil
                     }
                     c.lastSeen = Date()
-                    // /info 的 addresses/tailscale 是多地址选路的数据来源：
-                    // 用户没手打过 Tailscale 地址时，也能从探测结果里补上
+                    // 备用地址只从 `tailscale`（100.64.0.0/10 段）里取。
+                    // ★ 不要用 `addresses`：它包含当前地址和 169.254.x.x 这种
+                    //   链路本地地址，拿它当选路目标等于切到一个连不上的地址。
                     if let payload = probeTransport.probe, c.tailscaleHost == nil,
-                       let first = payload.tailscale.first ?? payload.addresses.first,
+                       let first = payload.tailscale.first,
                        let url = URL(string: first), let host = url.host, host != c.host {
                         c.tailscaleHost = host
                         c.tailscalePort = url.port ?? c.port

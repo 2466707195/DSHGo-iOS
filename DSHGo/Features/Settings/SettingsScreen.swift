@@ -68,9 +68,25 @@ struct SettingsScreen: View {
                     Spacer()
                 }
             } else {
-                Text("还没有连接。到「连接」页选一台电脑。")
-                    .font(AuroraFont.bodySmall)
-                    .foregroundStyle(Aurora.inkSoft)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(notConnectedTitle)
+                        .font(AuroraFont.titleSmall)
+                        .foregroundStyle(Aurora.ink)
+                    Text(notConnectedMessage)
+                        .font(AuroraFont.bodySmall)
+                        .foregroundStyle(Aurora.inkSoft)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 8) {
+                        if let computer = model.store.active {
+                            SmallTonalButton(text: "重试连接", systemIcon: "arrow.clockwise") {
+                                model.connect(computer: computer)
+                            }
+                        }
+                        SmallTonalButton(text: "去连接页", systemIcon: "rectangle.grid.1x2") {
+                            model.selectedTab = .computers
+                        }
+                    }
+                }
             }
         }
     }
@@ -263,6 +279,24 @@ struct SettingsScreen: View {
     }
 
     // MARK: 小组件
+
+    /// 未连接的真正原因 —— 别再一律显示「未连接」。
+    private var notConnectedTitle: String {
+        if case .failed = model.linkState { return "连接失败" }
+        if case .unlockRequired = model.linkState { return "需要解锁" }
+        if model.linkState.isConnecting { return "正在连接…" }
+        if model.store.computers.isEmpty { return "还没有添加电脑" }
+        return "还没连接电脑"
+    }
+
+    private var notConnectedMessage: String {
+        if case .failed(_, let reason) = model.linkState { return reason }
+        if case .unlockRequired = model.linkState { return "这台电脑设了访问密码，回连接页输一次。" }
+        if model.store.computers.isEmpty {
+            return "到「连接」页添加一台电脑：打开电脑上 dsh 设置里的「局域网访问」页签，把地址加进来。"
+        }
+        return "到「连接」页点一下那台电脑。"
+    }
 
     private func cardTitle(_ text: String) -> some View {
         Text(text)
