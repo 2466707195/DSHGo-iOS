@@ -46,6 +46,25 @@ final class DSHTransport: ObservableObject {
     @Published private(set) var error: String?
     @Published private(set) var lastCookieInfo = "（还没试过）"
     @Published private(set) var clientId: String?
+    /// 事件流的工作模式：流 / 轮询兜底 / 断了。
+    @Published private(set) var mode: Mode = .stream
+
+    /// `/__dshgo__/info` 的可用字段（多地址选路 + 更新提示都靠它）。
+    struct Probe: Equatable {
+        let addresses: [String]
+        let tailscale: [String]
+        let upstreamPort: Int
+        let updateAvailable: Bool
+        let latestVersion: String?
+    }
+
+    @Published private(set) var probe: Probe?
+
+    enum Mode: Equatable {
+        case stream      // WebSocket 事件流
+        case poll        // 轮询兜底（服务端没有 remote.mux，或流连不上）
+        case down        // 彻底断了
+    }
 
     let computer: DSHComputer
 
@@ -62,8 +81,12 @@ final class DSHTransport: ObservableObject {
     private var ws: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
+    private var pollTask: Task<Void, Never>?
+    private var pingTask: Task<Void, Never>?
     private var bag = Set<AnyCancellable>()
     private var stopped = false
+    /// WebSocket 连续失败次数。2 次基本可判定服务端没有这条路由 → 退轮询。
+    private var wsFailures = 0
 
     init(computer: DSHComputer) {
         self.computer = computer
@@ -106,6 +129,8 @@ final class DSHTransport: ObservableObject {
         stopped = true
         receiveTask?.cancel()
         reconnectTask?.cancel()
+        pollTask?.cancel()
+        pingTask?.cancel()
     }
 
     /// 重新启用（切回这条连接时用）：之前的 stopEvents 会把它关掉。
@@ -221,12 +246,20 @@ final class DSHTransport: ObservableObject {
                 return .notDshgo
             }
             let ms = Int(Date().timeIntervalSince(started) * 1000)
+            let payload = Probe(
+                addresses: json["addresses"] as? [String] ?? [],
+                tailscale: json["tailscale"] as? [String] ?? [],
+                upstreamPort: json["upstreamPort"] as? Int ?? 0,
+                updateAvailable: json["updateAvailable"] as? Bool ?? false,
+                latestVersion: json["latestVersion"] as? String
+            )
+            probe = payload
             return .online(
                 ms: ms,
                 version: json["version"] as? String,
                 needsPassword: needsPassword,
                 listening: json["listening"] as? Bool ?? false,
-                upstreamPort: json["upstreamPort"] as? Int ?? 0
+                upstreamPort: payload.upstreamPort
             )
         } catch {
             return .failed(describe(error))
@@ -297,6 +330,11 @@ final class DSHTransport: ObservableObject {
         case badEnvelope(String)
         case server(code: String, message: String)
         case http(Int, String)
+
+        var httpCode: Int {
+            if case .http(let code, _) = self { return code }
+            return 0
+        }
     }
 
     /// `POST /api/<ns>/<method>`，端点用斜杠（点号会得到 invalid Remote endpoint）。
@@ -341,7 +379,8 @@ final class DSHTransport: ObservableObject {
 
     /// 拉一次全量会话：事件流里只带 sessionId + running，**没有标题**，
     /// 通知要说「『检查库存字段』跑完了」就得先有这张对照表。
-    func snapshot() async {
+    @discardableResult
+    func snapshot() async -> Bool {
         isSnapshotting = true
         defer { isSnapshotting = false }
         do {
@@ -353,23 +392,35 @@ final class DSHTransport: ObservableObject {
                 let title = (item["projections"] as? [String: Any])?["values"]
                     .flatMap { ($0 as? [String: Any])?["title"] as? String } ?? ""
                 let running = item["running"] as? Bool ?? false
-                let updated = (item["updatedAt"] as? Double).map(Date.init(timeIntervalSince1970:)) ?? Date()
+                // ⚠️ updatedAt 是**毫秒**（实测 1789361786040），当秒用会得到 58000 年后
+                let updated = (item["updatedAt"] as? Double).map { Date(timeIntervalSince1970: $0 / 1000) } ?? Date()
+                // 审批是 waterfall 驱动进来的，snapshot 里没有 —— 必须按 id 保留，
+                // 否则「等你批准」那一行和它的按钮会凭空消失。
                 let existing = sessions.first { $0.id == id }
+                let previousApproval = existing?.approval
+                let wasRunning = existing?.isRunning ?? false
                 next.append(DSHSession(
                     id: id,
                     title: title.isEmpty ? (existing?.title ?? "未命名会话") : title,
                     isRunning: running,
                     updatedAt: updated,
-                    approval: existing?.approval
+                    approval: previousApproval
                 ))
+                // 跑完了 → 推一条通知（标题来自 snapshot，事件流里不带标题）
+                if wasRunning, !running {
+                    notifyFinished(id: id, title: next.last?.title ?? "会话")
+                }
             }
             sessions = next
             for s in next { onSessionEvent?(s) }
             error = nil
+            return true
         } catch let error as RPCError {
             self.error = rpcMessage(error)
+            return false
         } catch {
             self.error = describe(error)
+            return false
         }
     }
 
@@ -378,6 +429,9 @@ final class DSHTransport: ObservableObject {
         case .http(404, _):
             // session/list 是 0.1.2-alpha.2 才加的；版本更老时明确告诉用户去升级
             return "session/list RPC → HTTP 404（DSH 版本过老，请升级到 0.1.2-rc.1 以上）"
+        case .http(401, _), .http(403, _):
+            // 别把认证/栅栏问题说成「版本太老」——先确认握手与解锁
+            return "拿不到会话列表：HTTP \(error.httpCode)。先确认这台电脑已解锁、握手成功（诊断页看 Cookie 条数）"
         case .http(let code, let body):
             return "HTTP \(code)：\(body.prefix(120))"
         case .server(_, let message): return message
@@ -390,11 +444,14 @@ final class DSHTransport: ObservableObject {
 
     private static let streamID = "dsh-watch"
 
-    /// 打开 `$events`。断开后自动隔几秒重连。
+    /// 打开 `$events`。断开后自动隔几秒重连；连续失败 2 次退到轮询兜底。
     func startEvents() {
         guard !stopped else { return }
         receiveTask?.cancel()
         reconnectTask?.cancel()
+        pollTask?.cancel()
+        pingTask?.cancel()
+        mode = .stream
         receiveTask = Task { [weak self] in
             await self?.runEventStream()
         }
@@ -404,6 +461,8 @@ final class DSHTransport: ObservableObject {
         stopped = true
         receiveTask?.cancel()
         reconnectTask?.cancel()
+        pollTask?.cancel()
+        pingTask?.cancel()
         let cancel: [String: Any] = ["type": "cancel", "streamId": Self.streamID]
         if let data = try? JSONSerialization.data(withJSONObject: cancel),
            let text = String(data: data, encoding: .utf8) {
@@ -412,6 +471,7 @@ final class DSHTransport: ObservableObject {
         ws?.cancel(with: .goingAway, reason: nil)
         ws = nil
         isEventStreamLive = false
+        mode = .down
     }
 
     private func runEventStream() async {
@@ -419,7 +479,7 @@ final class DSHTransport: ObservableObject {
             .replacingOccurrences(of: "https://", with: "wss://")
             .replacingOccurrences(of: "http://", with: "ws://")
         guard let url = URL(string: wsBase + "/api/remote.mux") else {
-            await reconnect()
+            await fallBackToPolling()
             return
         }
         var request = URLRequest(url: url)
@@ -430,6 +490,10 @@ final class DSHTransport: ObservableObject {
             request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
         }
         request.setValue(Self.appUA, forHTTPHeaderField: "User-Agent")
+        // 栅栏要求 Origin 与 Host 同源；代理会把它改写成 loopback，这里显式给一个
+        if let up = probe?.upstreamPort, up > 0 {
+            request.setValue("http://127.0.0.1:\(up)", forHTTPHeaderField: "Origin")
+        }
 
         // 同步创建（iOS 13+）：连接错误由 receive() 抛出，走下面的重连分支
         let task = session.webSocketTask(with: request)
@@ -449,6 +513,8 @@ final class DSHTransport: ObservableObject {
         }
 
         isEventStreamLive = true
+        wsFailures = 0
+        startKeepAlive(task: task)
         while !Task.isCancelled {
             do {
                 let message = try await task.receive()
@@ -463,8 +529,27 @@ final class DSHTransport: ObservableObject {
             }
         }
         isEventStreamLive = false
+        pingTask?.cancel()
         if !Task.isCancelled {
-            await reconnect()
+            // 流断了：重连几次，还不行就退到轮询兜底
+            wsFailures += 1
+            if wsFailures >= 2 {
+                await fallBackToPolling()
+            } else {
+                await reconnect()
+            }
+        }
+    }
+
+    /// 保活：防 NAT 静默断链（Android 侧用 OkHttp 的 pingInterval 20s 做同一件事）。
+    private func startKeepAlive(task: URLSessionWebSocketTask) {
+        pingTask?.cancel()
+        pingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 20 * 1_000_000_000)
+                if Task.isCancelled { return }
+                try? await task.send(.string("{\"type\":\"ping\"}"))
+            }
         }
     }
 
@@ -474,6 +559,33 @@ final class DSHTransport: ObservableObject {
         guard !Task.isCancelled, !stopped else { return }
         receiveTask = Task { [weak self] in
             await self?.runEventStream()
+        }
+    }
+
+    /// 轮询兜底：WS 连不上（或服务端根本没注册 `/api/remote.mux`）时
+    /// 每 3 秒拉一次 `session/list`；每 20 tick（约 1 分钟）回试一次 WS，
+    /// 这样宿升级后能自动切回流，不用重启 App。
+    private func fallBackToPolling() async {
+        guard !stopped else { return }
+        mode = .poll
+        isEventStreamLive = false
+        receiveTask?.cancel()
+        reconnectTask?.cancel()
+        pollTask?.cancel()
+        pollTask = Task { [weak self] in
+            var tick = 0
+            while !Task.isCancelled {
+                _ = await self?.snapshot()
+                tick += 1
+                if tick % 20 == 0 {
+                    // 回试事件流
+                    self?.wsFailures = 0
+                    self?.mode = .stream
+                    self?.startEvents()
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 3 * 1_000_000_000)
+            }
         }
     }
 
@@ -556,8 +668,13 @@ final class DSHTransport: ObservableObject {
                 let wasRunning = s.isRunning
                 s.isRunning = running
                 s.updatedAt = Date()
-                // 跑完了：把还挂着的审批清掉（可能是网页那边答的）
-                if wasRunning, !running { s.approval = nil }
+                // 跑完了：把还挂着的审批清掉（可能是网页那边答的），通知也一起撤
+                if wasRunning, !running {
+                    if let ask = s.approval {
+                        cancelPendingNotification(eventId: ask.eventId)
+                    }
+                    s.approval = nil
+                }
                 sessions[idx] = s
                 onSessionEvent?(s)
             }
@@ -593,6 +710,7 @@ final class DSHTransport: ObservableObject {
             eventId: ask.eventId,
             outcome: ["kind": "result", "value": allow ? "allowed-once" : "rejected"]
         )
+        cancelPendingNotification(eventId: ask.eventId)
         if let idx = sessions.firstIndex(where: { $0.id == ask.sessionId }) {
             sessions[idx].approval = nil
             onSessionEvent?(sessions[idx])
@@ -612,20 +730,56 @@ final class DSHTransport: ObservableObject {
     // MARK: - 本地通知
 
     /// 退到后台时原生接管审批：等待批准的请求推一条带动作的通知。
+    ///
+    /// ask 本体（含 `clientId`，回执要用）**一并塞进 userInfo** ——
+    /// App 被通知拉起来时 `sessions` 还是空的，只靠 eventId 找不到它。
     func notifyPending(ask: ApprovalAsk, session: DSHSession) {
         let content = UNMutableNotificationContent()
         content.title = "DSH Go · 等你批准"
         content.body = "\(ask.displayTitle)｜\(session.title)"
         content.categoryIdentifier = "DSH_APPROVAL"
         content.interruptionLevel = .timeSensitive
-        // 只带 eventId；ask 本体由 AppModel 按 id 找回（userInfo 不能放自定义对象）
-        content.userInfo = ["eventId": ask.eventId, "sessionId": ask.sessionId ?? ""]
+        var info: [String: Any] = [
+            "eventId": ask.eventId,
+            "sessionId": ask.sessionId ?? ""
+        ]
+        if let data = try? JSONEncoder().encode(ask),
+           let json = String(data: data, encoding: .utf8) {
+            info["ask"] = json
+        }
+        content.userInfo = info
         let request = UNNotificationRequest(
-            identifier: "dshgo-approval-\(ask.eventId)",
+            identifier: Self.notificationID(for: ask.eventId),
             content: content,
             sound: .default
         )
         UNUserNotificationCenter.current().add(request)
+    }
+
+    /// 跑完了推一条通知。标题来自 snapshot（事件流里只带 sessionId + running）。
+    func notifyFinished(id: String, title: String) {
+        guard UIApplication.shared.applicationState != .active else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "DSH Go · 跑完了"
+        content.body = title
+        content.interruptionLevel = .passive
+        let request = UNNotificationRequest(
+            identifier: "dshgo-done-\(id)",
+            content: content,
+            sound: .default
+        )
+        UNUserNotificationCenter.current().add(request)
+    }
+
+    /// 审批已回答（或会话结束）→ 把通知撤掉，别让「等你批准」一直挂在托盘里。
+    func cancelPendingNotification(eventId: String) {
+        UNUserNotificationCenter.current().removeDeliveredNotifications(
+            withIdentifiers: [Self.notificationID(for: eventId)]
+        )
+    }
+
+    private static func notificationID(for eventId: String) -> String {
+        "dshgo-approval-\(eventId)"
     }
 
     // MARK: - 工具

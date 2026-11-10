@@ -20,9 +20,9 @@ struct DSHComputer: Identifiable, Hashable, Codable {
     var isOnline: Bool
     var needsPassword: Bool
     var latencyMs: Int?
-    /// 本机保存的访问密码。密码是根凭据，第一次必须先输一次；
-    /// 之后才是指纹或人脸。「每次输密码」这一档本机不存。
-    var savedPassword: String?
+    /// 本机是否已存访问密码。**只存这一个标记** —— 密码本身在 Keychain，
+    /// 永远不要写进 UserDefaults / Codable 模型里。
+    var hasStoredPassword: Bool = false
     var isActive: Bool = false
 
     var displayAddress: String {

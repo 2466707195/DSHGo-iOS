@@ -13,6 +13,7 @@ struct BrowserScreen: View {
     @State private var currentURL: URL?
     @State private var canGoBack = false
     @State private var canGoForward = false
+    @State private var loadFailed = false
 
     private var computer: DSHComputer? {
         model.linkState.computer
@@ -32,8 +33,27 @@ struct BrowserScreen: View {
                             canGoBack = back
                             canGoForward = forward
                         },
-                        onLoadFailed: { _ in }
+                        onLoadFailed: { _ in loadFailed = true }
                     )
+                    .overlay {
+                        if loadFailed {
+                            VStack(spacing: 0) {
+                                EmptyStateView(
+                                    systemIcon: "wifi.slash",
+                                    title: "页面打不开",
+                                    message: "\(computer.displayAddress) 没有响应。确认电脑上 dsh web 在跑，且手机和它在同一网络。"
+                                ) {
+                                    SmallTonalButton(text: "重试", systemIcon: "arrow.clockwise") {
+                                        loadFailed = false
+                                        NotificationCenter.default.post(name: .dshReloadBrowser, object: nil)
+                                    }
+                                }
+                                Spacer()
+                            }
+                            .frame(maxWidth: .infinity)
+                            .background(Aurora.canvas)
+                        }
+                    }
                     toolBar
                 }
             }

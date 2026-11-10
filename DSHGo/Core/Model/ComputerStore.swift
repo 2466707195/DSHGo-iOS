@@ -44,7 +44,7 @@ final class ComputerStore: ObservableObject {
             isOnline: false,
             needsPassword: false,
             latencyMs: nil,
-            savedPassword: nil
+            hasStoredPassword: false
         )
         computers.append(computer)
         save()

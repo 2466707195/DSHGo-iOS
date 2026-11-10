@@ -13,6 +13,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     ) -> Bool {
         UNUserNotificationCenter.current().delegate = self
 
+        // ★ 没有这一句，通知一条都不会出现 —— `add(_:)` 会被静默丢掉。
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
+
         // 带动作的通知分类：允许 / 拒绝
         let allow = UNNotificationAction(
             identifier: "DSH_ALLOW",
@@ -60,4 +63,35 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         }
         completionHandler()
     }
+
+    // MARK: - 长按图标快捷菜单
+
+    /// 新会话 / 继续最近 / 设置 —— 静态项在 project.yml 的
+    /// `UIApplicationShortcutItems` 里声明，这里只负责接住点击。
+    func application(
+        _ application: UIApplication,
+        performActionFor shortcutItem: UIApplicationShortcutItem,
+        completionHandler: @escaping (Bool) -> Void
+    ) {
+        let name: Notification.Name
+        switch shortcutItem.type {
+        case "com.dshgo.shortcut.newSession":
+            name = .dshShortcutNewSession
+        case "com.dshgo.shortcut.recent":
+            name = .dshShortcutRecent
+        case "com.dshgo.shortcut.settings":
+            name = .dshShortcutSettings
+        default:
+            completionHandler(false)
+            return
+        }
+        NotificationCenter.default.post(name: name, object: nil)
+        completionHandler(true)
+    }
+}
+
+extension Notification.Name {
+    static let dshShortcutNewSession = Notification.Name("dshShortcutNewSession")
+    static let dshShortcutRecent = Notification.Name("dshShortcutRecent")
+    static let dshShortcutSettings = Notification.Name("dshShortcutSettings")
 }

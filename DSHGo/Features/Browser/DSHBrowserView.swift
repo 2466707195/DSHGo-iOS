@@ -263,13 +263,17 @@ struct DSHBrowserView: UIViewRepresentable {
         view.onNavStateChange = onNavStateChange
         view.onLoadFailed = onLoadFailed
         view.webView.navigationDelegate = context.coordinator
+        context.coordinator.onLoadFailed = onLoadFailed
         view.observe()
         view.load(baseURL: baseURL)
         return view
     }
 
     func updateUIView(_ uiView: DSHWebView, context: Context) {
-        if uiView.webView.url == nil {
+        // 连接切换后地址变了必须重载，否则浏览器 Tab 还显示着上一台电脑的页面。
+        // 只在「还没加载过」或「地址真的变了」时重载，避免每次刷新都打断正在写的输入框。
+        let current = uiView.webView.url?.absoluteString
+        if current == nil || current != baseURL.absoluteString {
             uiView.layoutMobile = DSHWebViewLayout.mobile
             uiView.load(baseURL: baseURL)
         }
@@ -277,16 +281,25 @@ struct DSHBrowserView: UIViewRepresentable {
 
     final class Coordinator: NSObject, WKNavigationDelegate {
 
-        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-            NotificationCenter.default.post(
-                name: .dshWebLoadFailed,
-                object: nil,
-                userInfo: ["error": error]
-            )
+        /// 外层回调（失败时 BrowserScreen 显示原生错误页，而不是一片空白）。
+        var onLoadFailed: ((String) -> Void)?
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            // 首屏 DOM 就绪后注入 polyfill（正常情况下上游代理已经注入过，
+            // 这里只是不依赖代理的兜底；布局覆盖走的是 WKUserScript，在页面脚本之前）
+            injectPolyfills(webView)
+        }
+
+        func webView(_ webView: WKWebView,
+                     didFailProvisionalNavigation navigation: WKNavigation!,
+                     withError error: Error) {
+            onLoadFailed?(error.localizedDescription)
         }
     }
 }
 
 extension Notification.Name {
-    static let dshWebLoadFailed = Notification.Name("dshWebLoadFailed")
+    /// 地址栏的后退 / 前进按钮 → WebView（见 DSHWebView 里的订阅）
+    static let dshWebBack = Notification.Name("dshWebBack")
+    static let dshWebForward = Notification.Name("dshWebForward")
 }

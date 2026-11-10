@@ -10,6 +10,7 @@ struct UnlockSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var password = ""
+    @State private var showPassword = false
     @State private var isUnlocking = false
 
     private var computer: DSHComputer? {
@@ -49,16 +50,20 @@ struct UnlockSheet: View {
                             placeholder: "访问密码",
                             text: $password,
                             systemIcon: "key.fill",
-                            isSecure: true
+                            trailingSystemIcon: showPassword ? "eye.slash.fill" : "eye.fill",
+                            isSecure: !showPassword,
+                            onTrailingTap: { showPassword.toggle() }
                         )
+
+                        if model.hasStoredPassword, BiometricUnlock.isAvailable(for: UnlockPreferences.mode) {
+                            PrimaryButton(text: biometricTitle, systemIcon: biometricIcon) {
+                                model.unlockWithBiometrics()
+                            }
+                        }
 
                         PrimaryButton(text: isUnlocking ? "正在解锁…" : "解锁", systemIcon: "lock.open.fill") {
                             isUnlocking = true
                             model.unlock(password: password)
-                            // 解锁成功后 sheet 由 linkState 变化自动收起
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-                                isUnlocking = false
-                            }
                         }
                         .disabled(password.isEmpty || isUnlocking)
 
@@ -75,8 +80,25 @@ struct UnlockSheet: View {
                 Spacer()
             }
         }
+        // 状态驱动收起：解锁成功（或断开）才关，失败时留着让用户重试
         .onChange(of: model.linkState) { state in
             if state.isOnline || state == .idle { dismiss() }
+        }
+    }
+
+    private var biometricTitle: String {
+        switch UnlockPreferences.mode {
+        case .biometricOnly: return "用指纹/面容解锁"
+        case .passcodeOnly: return "用设备密码解锁"
+        default: return "用已存的密码解锁"
+        }
+    }
+
+    private var biometricIcon: String {
+        switch UnlockPreferences.mode {
+        case .biometricOnly: return "touchid"
+        case .passcodeOnly: return "lock.rectangle.on.rectangle"
+        default: return "key.horizontal"
         }
     }
 }

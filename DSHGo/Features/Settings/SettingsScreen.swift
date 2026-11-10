@@ -54,7 +54,7 @@ struct SettingsScreen: View {
                     infoRow("延迟", "\(latency) ms")
                 }
                 infoRow("状态", model.linkState.title)
-                infoRow("事件流", model.activeTransport?.isEventStreamLive == true ? "WebSocket 已连接" : "未连接")
+                infoRow("事件流", model.activeTransport.map { modeText($0.mode) } ?? "未连接")
 
                 Spacer().frame(height: 10)
                 HStack(spacing: 8) {
@@ -158,7 +158,39 @@ struct SettingsScreen: View {
     private var unlockCard: some View {
         SectionCard {
             cardTitle("解锁方式")
-            infoRow("已存密码", (model.linkState.computer?.savedPassword?.isEmpty == false) ? "已保存（下次免输）" : "未保存")
+
+            // 档位选择
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(UnlockMode.allCases) { mode in
+                    Button {
+                        UnlockPreferences.mode = mode
+                        model.toast = Toast(text: "解锁方式：\(mode.title)", kind: .info)
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: UnlockPreferences.mode == mode ? "largecircle.fill.circle" : "circle")
+                                .font(.system(size: 15))
+                                .foregroundStyle(UnlockPreferences.mode == mode ? Aurora.brand : Aurora.muted)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(mode.title)
+                                    .font(AuroraFont.bodyMedium)
+                                    .foregroundStyle(Aurora.ink)
+                                Text(mode.detail)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(Aurora.muted)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.bottom, 4)
+
+            Divider().overlay(Aurora.hairline).padding(.vertical, 6)
+
+            infoRow("已存密码", model.hasStoredPassword ? "已存（Keychain）" : "未存")
 
             if let computer = model.linkState.computer {
                 Spacer().frame(height: 8)
@@ -166,13 +198,13 @@ struct SettingsScreen: View {
                     SmallTonalButton(text: "清除密码", systemIcon: "key.slash") {
                         showForgetConfirm = true
                     }
-                    .disabled(computer.savedPassword?.isEmpty != false)
+                    .disabled(!model.hasStoredPassword)
                     Spacer()
                 }
             }
 
             Spacer().frame(height: 8)
-            bullet("faceid", "App 侧解锁可选四档：自动 / 仅指纹人脸 / 仅设备密码 / 每次输密码。")
+            bullet("faceid", "密码存在系统 Keychain（不参与 iCloud 备份），不是 UserDefaults 明文。")
             bullet("hand.raised", "最严的一档是「每次输密码」：本机不存密码，每次都要打。")
         }
     }
@@ -195,7 +227,7 @@ struct SettingsScreen: View {
             cardTitle("诊断")
             infoRow("连接状态", model.linkState.title)
             if let transport = model.activeTransport {
-                infoRow("事件流", transport.isEventStreamLive ? "WebSocket 已连接" : "未连接")
+                infoRow("事件流", modeText(transport.mode))
                 infoRow("Cookie", transport.lastCookieInfo)
                 if let error = transport.error {
                     Text(error)
@@ -267,5 +299,14 @@ struct SettingsScreen: View {
             Spacer(minLength: 0)
         }
         .padding(.vertical, 5)
+    }
+
+    /// 事件流三种模式：流 / 轮询兜底 / 断了。
+    private func modeText(_ mode: DSHTransport.Mode) -> String {
+        switch mode {
+        case .stream: return "WebSocket 事件流"
+        case .poll: return "轮询兜底（每 3 秒，每分钟回试一次事件流）"
+        case .down: return "已断开"
+        }
     }
 }

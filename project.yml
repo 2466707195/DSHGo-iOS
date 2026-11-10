@@ -51,6 +51,17 @@ targets:
           NSAllowsLocalNetworking: true
           # 转发端口是 http://<IP>:3081 这种 IP 字面量，NSAllowsLocalNetworking 覆盖不到
           NSAllowsArbitraryLoads: true
+        # 长按图标：新会话 / 继续最近 / 设置（AppDelegate.performActionFor 接住）
+        UIApplicationShortcutItems:
+          - UIApplicationShortcutItemType: com.dshgo.shortcut.newSession
+            UIApplicationShortcutItemTitle: 新会话
+            UIApplicationShortcutItemIconType: UIApplicationShortcutIconTypeCompose
+          - UIApplicationShortcutItemType: com.dshgo.shortcut.recent
+            UIApplicationShortcutItemTitle: 继续最近
+            UIApplicationShortcutItemIconType: UIApplicationShortcutIconTypeTime
+          - UIApplicationShortcutItemType: com.dshgo.shortcut.settings
+            UIApplicationShortcutItemTitle: 设置
+            UIApplicationShortcutItemIconType: UIApplicationShortcutIconTypePreferences
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.dshgo.DSHGo

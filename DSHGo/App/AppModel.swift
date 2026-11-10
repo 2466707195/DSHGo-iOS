@@ -127,12 +127,43 @@ final class AppModel: ObservableObject {
     }
 
     /// 通知栏动作：按 eventId 找回审批再回答。
+    ///
+    /// App 可能是被通知**冷启动**拉起来的 —— 那时 `sessions` 还是空的、
+    /// `activeTransport` 还在握手，所以必须能从通知自带的 ask（含 clientId）回答。
     private func answerFromNotification(_ userInfo: [AnyHashable: Any]?, allow: Bool) {
         guard let eventId = userInfo?["eventId"] as? String else { return }
+
+        // 1. 内存里就有（App 活着）
         for session in sessions {
             if let ask = session.approval, ask.eventId == eventId {
                 answerApproval(ask, allow: allow)
                 return
+            }
+        }
+
+        // 2. 通知里带的 ask 本体（冷启动）
+        if let json = userInfo?["ask"] as? String,
+           let data = json.data(using: .utf8),
+           let ask = try? JSONDecoder().decode(ApprovalAsk.self, from: data) {
+            ensureTransport(for: ask)
+            activeTransport?.answerApproval(ask, allow: allow)
+            return
+        }
+
+        // 3. 连 ask 都没有：至少把通知撤掉，别让它一直挂在托盘里
+        UNUserNotificationCenter.current().removeDeliveredNotifications(
+            withIdentifiers: ["dshgo-approval-\(eventId)"]
+        )
+    }
+
+    /// 冷启动回答审批前，确保有一条能用的 transport（必要时先把当前连接拉起来）。
+    private func ensureTransport(for ask: ApprovalAsk) {
+        if activeTransport != nil { return }
+        if let computer = store.active {
+            connect(computer: computer)
+        } else if let sessionId = ask.sessionId {
+            if let computer = store.computers.first(where: { $0.id.hasPrefix(sessionId) }) {
+                connect(computer: computer)
             }
         }
     }
@@ -187,8 +218,8 @@ final class AppModel: ObservableObject {
             c.isOnline = true
             c.needsPassword = true
             store.update(c)
-            if let saved = c.savedPassword, !saved.isEmpty {
-                await finishUnlock(transport: transport, computer: c, password: saved)
+            if c.hasStoredPassword {
+                await unlockWithStoredPassword(transport: transport, computer: c)
             } else {
                 linkState = .unlockRequired(c)
             }
@@ -204,8 +235,8 @@ final class AppModel: ObservableObject {
             store.update(c)
 
             if needsPassword {
-                if let saved = c.savedPassword, !saved.isEmpty {
-                    await finishUnlock(transport: transport, computer: c, password: saved)
+                if c.hasStoredPassword {
+                    await unlockWithStoredPassword(transport: transport, computer: c)
                 } else {
                     linkState = .unlockRequired(c)
                 }
@@ -215,25 +246,59 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// 已存过密码的连接：按当前档位取回来直接解锁（免手输）。
+    private func unlockWithStoredPassword(transport: DSHTransport, computer: DSHComputer) async {
+        let mode = UnlockPreferences.mode
+        // 「每次输密码」这一档本机不存，永远走手动
+        guard mode.persistsPassword else {
+            linkState = .unlockRequired(computer)
+            return
+        }
+        guard let password = await BiometricUnlock.loadPassword(
+            mode: mode,
+            account: computer.id,
+            reason: BiometricUnlock.reason(for: computer.name)
+        ) else {
+            // 取不到（Keychain 被清 / 生物识别失败）→ 退回手动
+            linkState = .unlockRequired(computer)
+            return
+        }
+        await finishUnlock(transport: transport, computer: computer, password: password)
+    }
+
     private func handshakeFailureMessage(_ result: DSHTransport.HandshakeResult) -> String {
         if case .failed(let message) = result { return message }
         return "握手失败"
     }
 
     /// 解锁：密码是根凭据，第一次必须先输一次。
+    ///
+    /// ⚠️ **解锁成功后必须再握手一次。** 设了访问密码时，解锁前那次握手只会拿到
+    /// 一张 HTML 密码页（UA 里没有 DSHGo → 走浏览器分支），`dsh-auth-*` cookie
+    /// 是过不了闸门的 —— 不重握，紧接着的 `session/list` 就是 401，
+    /// 而界面上会错误地显示「DSH 版本太老」。
     private func finishUnlock(transport: DSHTransport, computer: DSHComputer, password: String) async {
         let result = await transport.unlock(password: password)
         switch result {
         case .ok:
+            let again = await transport.handshake()
+            guard again.isOK else {
+                linkState = .failed(computer, "解锁后握手失败：\(handshakeFailureMessage(again))")
+                toast = Toast(text: "解锁成功但握手失败，请重试", kind: .error)
+                return
+            }
             var c = computer
             c.needsPassword = true
+            c.isOnline = true
             store.update(c)
             finishConnect(computer: c)
         case .notRequired:
             finishConnect(computer: computer)
         case .badPassword:
+            // 密码不对：把 Keychain 里那份也清掉，否则下次会拿旧密码再撞一次
+            Keychain.delete(account: computer.id)
             var c = computer
-            c.savedPassword = nil
+            c.hasStoredPassword = false
             store.update(c)
             linkState = .unlockRequired(c)
             toast = Toast(text: "密码不对，重新输一次", kind: .warning)
@@ -261,8 +326,13 @@ final class AppModel: ObservableObject {
               let transport = transport(for: computer.id) else {
             return
         }
+        // 密码是根凭据：除了「每次输密码」那一档，其它都存 Keychain（不是 UserDefaults）
+        let mode = UnlockPreferences.mode
+        if mode.persistsPassword {
+            Keychain.save(password, account: computer.id)
+        }
         var c = computer
-        c.savedPassword = password
+        c.hasStoredPassword = mode.persistsPassword
         store.update(c)
 
         Task {
@@ -270,11 +340,39 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// 有已存密码时，直接走当前档位的校验取回来解锁（免手输）。
+    func unlockWithBiometrics() {
+        guard let computer = linkState.computer,
+              let transport = transport(for: computer.id) else {
+            return
+        }
+        let mode = UnlockPreferences.mode
+        let reason = BiometricUnlock.reason(for: computer.name)
+        Task {
+            guard let password = await BiometricUnlock.loadPassword(
+                mode: mode,
+                account: computer.id,
+                reason: reason
+            ) else {
+                toast = Toast(text: "没有取到已存的密码，请手动输一次", kind: .warning)
+                return
+            }
+            await finishUnlock(transport: transport, computer: computer, password: password)
+        }
+    }
+
+    /// 这台电脑有没有已存的密码（决定解锁界面显示哪个按钮）。
+    var hasStoredPassword: Bool {
+        guard let computer = linkState.computer else { return false }
+        return Keychain.load(account: computer.id) != nil
+    }
+
     /// 用户想换密码：清掉本机存的，重新走解锁界面。
     func forgetPassword() {
         guard let computer = linkState.computer else { return }
+        Keychain.delete(account: computer.id)
         var c = computer
-        c.savedPassword = nil
+        c.hasStoredPassword = false
         store.update(c)
         linkState = .unlockRequired(c)
         toast = Toast(text: "已清除 \(c.name) 的密码", kind: .info)
@@ -341,12 +439,16 @@ final class AppModel: ObservableObject {
     /// 插件两个不需要先解锁的端点。
     ///
     /// 并发而不是串行：五条连接串行各等 2.5 秒就是 12 秒，列表转半天。
+    ///
+    /// ⚠️ 探测**不能**走 `getTransport` —— 那个会 `restart()` 起事件流，
+    /// 于是列表刷新会给每台电脑（包括离线的）都开一条 WebSocket。
     func refreshAllStatus() async {
         await withTaskGroup(of: Void.self) { group in
             for computer in store.computers {
                 group.addTask { @MainActor in
-                    let transport = self.getTransport(for: computer)
-                    let outcome = await transport.probe()
+                    // 一次性探测对象：只问端点，不订阅事件流
+                    let probeTransport = DSHTransport(computer: computer)
+                    let outcome = await probeTransport.probe()
                     var c = computer
                     switch outcome {
                     case .online(let ms, let version, let needsPassword, _, _):
@@ -363,6 +465,14 @@ final class AppModel: ObservableObject {
                         c.latencyMs = nil
                     }
                     c.lastSeen = Date()
+                    // /info 的 addresses/tailscale 是多地址选路的数据来源：
+                    // 用户没手打过 Tailscale 地址时，也能从探测结果里补上
+                    if let payload = probeTransport.probe, c.tailscaleHost == nil,
+                       let first = payload.tailscale.first ?? payload.addresses.first,
+                       let url = URL(string: first), let host = url.host, host != c.host {
+                        c.tailscaleHost = host
+                        c.tailscalePort = url.port ?? c.port
+                    }
                     self.store.update(c)
                 }
             }

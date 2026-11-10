@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import Combine
 
 @main
 struct DSHGoApp: App {
@@ -73,6 +74,16 @@ struct RootView: View {
             if case .unlockRequired = state {
                 showUnlock = true
             }
+        }
+        // 长按图标的三个快捷菜单
+        .onReceive(NotificationCenter.default.publisher(for: .dshShortcutNewSession)) { _ in
+            tab = .browser
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .dshShortcutRecent)) { _ in
+            tab = .sessions
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .dshShortcutSettings)) { _ in
+            tab = .settings
         }
     }
 
